@@ -19,23 +19,28 @@ The bot needs the **Staff Team** role (`1551143623427620911`) for moderation
 commands. `?lock` and `?unlock` additionally require the user to have
 **Manage Channels**.
 
-## Host on Render
+## Host on Square Cloud
 
-1. Push this repository to GitHub and create a new **Blueprint** in the
-   [Render Dashboard](https://dashboard.render.com/), selecting the repository.
-   Render will read `render.yaml` and create the Background Worker.
-2. In the worker's **Environment** settings, add `DISCORD_TOKEN` with your
-   Discord bot token. Do not commit the token or put it in `render.yaml`.
-3. In the Discord Developer Portal, enable **Server Members Intent** and
+1. Create a Square Cloud account and choose a plan with at least 512 MB of
+   available memory. The `squarecloud.app` file configures this as a Python bot
+   with automatic restarts.
+2. Deploy the project from the Square Cloud dashboard or CLI. Include
+   `pate_utilities.py`, `requirements.txt`, `squarecloud.app`, and the bot's
+   other source files. `squarecloud.ignore` keeps `.env`, local SQLite
+   databases, and development artifacts out of CLI uploads.
+3. Set the environment variables from `.env` in the application's Square Cloud
+   **Environment Variables** settings. Do not upload `.env` or put the bot
+   token in the source files. Restart the application after changing variables.
+4. In the Discord Developer Portal, enable **Server Members Intent** and
    **Message Content Intent** for the bot, then invite it to your server with
    the permissions it needs.
-4. Deploy the worker. Render installs `requirements.txt` and starts
-   `python pate_utilities.py`.
+5. Deploy and check the application logs. Square Cloud installs dependencies
+   from `requirements.txt` and starts `pate_utilities.py`.
 
-The Blueprint provisions a 1 GB persistent disk at `/var/data`, where the bot's
-SQLite database is stored across deploys and restarts. Render persistent disks
-require a paid instance, so this configuration uses the `starter` worker plan.
-The bot runs continuously as a worker and does not need a web server or a port.
+The SQLite database uses the configured `PATE_DB_PATH` (or
+`pate_utilities.sqlite3` by default) in the app's working directory. Keep a
+backup if the database contains data you need to preserve across deployments.
+The bot runs continuously and does not need a web server or a port.
 
 ## Commands
 
