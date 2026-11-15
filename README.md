@@ -19,6 +19,24 @@ The bot needs the **Staff Team** role (`1551143623427620911`) for moderation
 commands. `?lock` and `?unlock` additionally require the user to have
 **Manage Channels**.
 
+## Host on Render
+
+1. Push this repository to GitHub and create a new **Blueprint** in the
+   [Render Dashboard](https://dashboard.render.com/), selecting the repository.
+   Render will read `render.yaml` and create the Background Worker.
+2. In the worker's **Environment** settings, add `DISCORD_TOKEN` with your
+   Discord bot token. Do not commit the token or put it in `render.yaml`.
+3. In the Discord Developer Portal, enable **Server Members Intent** and
+   **Message Content Intent** for the bot, then invite it to your server with
+   the permissions it needs.
+4. Deploy the worker. Render installs `requirements.txt` and starts
+   `python pate_utilities.py`.
+
+The Blueprint provisions a 1 GB persistent disk at `/var/data`, where the bot's
+SQLite database is stored across deploys and restarts. Render persistent disks
+require a paid instance, so this configuration uses the `starter` worker plan.
+The bot runs continuously as a worker and does not need a web server or a port.
+
 ## Commands
 
 - `?ban @user <duration|perm> [reason]` — temporary bans are lifted automatically
