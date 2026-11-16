@@ -106,6 +106,7 @@ DONATION_AMOUNT_EMOJIS = {
 ROBLOX_USERNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_]{1,18}[A-Za-z0-9])$")
 AVATAR_CACHE_SECONDS = 6 * 60 * 60
 AVATAR_FAILURE_CACHE_SECONDS = 10 * 60
+DEFAULT_SIMULATION_TIMEZONE = "America/New_York"
 
 
 def validate_roblox_username(username: str) -> str:
@@ -241,18 +242,24 @@ def render_donation_card(
 
     style = DONATION_STYLES[donation_style_for_amount(amount)]
     accent = style["accent"]
+    scale = 2
     width, height = 2816, 768
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    canvas_width, canvas_height = width * scale, height * scale
+    image = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
 
     if style["glow"]:
-        glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        glow = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
         glow_draw = ImageDraw.Draw(glow)
         red, green, blue = ImageColor.getrgb(str(style["glow"]))
         start = int(style["glow_start"])
         max_alpha = int(style["glow_alpha"])
         for y in range(start, height):
             alpha = round(max_alpha * (y - start) / (height - start))
-            glow_draw.line((0, y, width - 1, y), fill=(red, green, blue, alpha))
+            glow_draw.line(
+                (0, y * scale, (width - 1) * scale, y * scale),
+                fill=(red, green, blue, alpha),
+                width=scale,
+            )
         image.alpha_composite(glow)
 
     draw = ImageDraw.Draw(image)
@@ -269,6 +276,7 @@ def render_donation_card(
         stroke_width: int = 0,
         stroke_fill: str = "#000000",
     ) -> tuple[int, int, int, int]:
+        stroke_width *= scale
         bounds = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
         text_layer = Image.new(
             "RGBA",
@@ -296,44 +304,46 @@ def render_donation_card(
                 (text_layer.width, round(text_layer.height * height_scale)),
                 Image.Resampling.LANCZOS,
             )
-        x = round(center_x - text_layer.width / 2)
+        x = round(center_x * scale - text_layer.width / 2)
+        y *= scale
         image.alpha_composite(text_layer, (x, y))
         return x, y, x + text_layer.width, y + text_layer.height
 
     def draw_avatar(
         avatar_bytes: bytes | None, center_x: int, username: str
     ) -> None:
-        center_y = 300
-        outer_radius = 205
+        center_x *= scale
+        center_y = 300 * scale
+        outer_radius = 200
         draw.ellipse(
             (
-                center_x - outer_radius,
-                center_y - outer_radius,
-                center_x + outer_radius,
-                center_y + outer_radius,
+                center_x - outer_radius * scale,
+                center_y - outer_radius * scale,
+                center_x + outer_radius * scale,
+                center_y + outer_radius * scale,
             ),
             fill="#09090B",
         )
         draw.ellipse(
             (
-                center_x - 195,
-                center_y - 195,
-                center_x + 195,
-                center_y + 195,
+                center_x - 195 * scale,
+                center_y - 195 * scale,
+                center_x + 195 * scale,
+                center_y + 195 * scale,
             ),
             fill=accent,
         )
         draw.ellipse(
             (
-                center_x - 182,
-                center_y - 182,
-                center_x + 182,
-                center_y + 182,
+                center_x - 180 * scale,
+                center_y - 180 * scale,
+                center_x + 180 * scale,
+                center_y + 180 * scale,
             ),
             fill="#101014",
         )
 
-        avatar_size = 346
+        avatar_size = 352 * scale
         avatar = Image.new("RGBA", (avatar_size, avatar_size), "#464650")
         if avatar_bytes:
             try:
@@ -360,25 +370,46 @@ def render_donation_card(
     draw_avatar(receiver_avatar, 2298, receiver)
 
     amount_text = f"{amount:,}"
-    amount_font = _load_font(194, True)
-    amount_bounds = draw.textbbox((0, 0), amount_text, font=amount_font)
-    amount_width = amount_bounds[2] - amount_bounds[0]
-    amount_scale = max(0.78, 0.9 - max(0, 10 - len(amount_text)) * 0.04)
-    scaled_amount_width = amount_width * amount_scale
-    amount_height = amount_bounds[3] - amount_bounds[1]
-    icon_size = 144
-    gap = 24
-    amount_top = 108
-    group_width = icon_size + gap + scaled_amount_width
-    group_left = (width - group_width) / 2
-    icon_left = round(group_left)
+    amount_stroke_width = 5 * scale
+    amount_top = 88
+    gap = 16 * scale
 
     with Image.open(donation_icon_path_for_amount(amount)) as source:
-        icon = source.convert("RGBA").resize(
-            (icon_size, icon_size), Image.Resampling.LANCZOS
-        )
+        icon_source = source.convert("RGBA")
+        artwork_bounds = icon_source.getchannel("A").point(
+            lambda alpha: 255 if alpha >= 8 else 0
+        ).getbbox()
+        if artwork_bounds is None:
+            raise ValueError("The donation Robux icon has no visible artwork.")
+        icon_source = icon_source.crop(artwork_bounds)
+        icon_aspect_ratio = icon_source.width / icon_source.height
 
-    amount_left = icon_left + icon_size + gap
+    max_group_width = (width - (540 + 200) - (width - 2298 + 200)) * scale
+    font_size = 214
+    while True:
+        amount_font = _load_font(font_size * scale, True)
+        amount_bounds = draw.textbbox(
+            (0, 0),
+            amount_text,
+            font=amount_font,
+            stroke_width=amount_stroke_width,
+        )
+        amount_fill_bounds = draw.textbbox((0, 0), amount_text, font=amount_font)
+        amount_width = amount_bounds[2] - amount_bounds[0]
+        amount_height = amount_bounds[3] - amount_bounds[1]
+        icon_size = amount_fill_bounds[3] - amount_fill_bounds[1]
+        icon_width = round(icon_size * icon_aspect_ratio)
+        if amount_width + gap + icon_width <= max_group_width:
+            break
+        font_size -= 2
+        if font_size <= 12:
+            raise ValueError("The donation amount cannot fit between the avatars.")
+
+    icon = icon_source.resize((icon_width, icon_size), Image.Resampling.LANCZOS)
+    group_width = icon_width + gap + amount_width
+    group_left = (canvas_width - group_width) / 2
+    icon_left = round(group_left)
+    amount_left = icon_left + icon_width + gap
     amount_layer = Image.new(
         "RGBA",
         (round(amount_width), amount_height),
@@ -390,57 +421,46 @@ def render_donation_card(
         amount_text,
         font=amount_font,
         fill=accent,
+        stroke_width=amount_stroke_width,
+        stroke_fill="#000000",
     )
-    amount_layer = amount_layer.resize(
-        (round(scaled_amount_width), amount_height),
-        Image.Resampling.LANCZOS,
-    )
-    image.alpha_composite(amount_layer, (amount_left, amount_top))
-    icon_top = amount_top + (amount_height - icon_size) // 2
+    image.alpha_composite(amount_layer, (amount_left, amount_top * scale))
+    icon_top = amount_top * scale + amount_fill_bounds[1] - amount_bounds[1]
     image.alpha_composite(icon, (icon_left, icon_top))
 
     centered_text(
         "donated to",
-        _load_font(121, True),
+        _load_font(132 * scale, True),
         width / 2,
-        380,
+        365,
         fill="#FFFFFF",
         width_scale=1.05,
         height_scale=1.12,
+        stroke_width=4,
     )
 
     def draw_username(username: str, center_x: int) -> None:
-        name_font = _fit_font(draw, username, 690, 52, bold=True)
+        name_font = _fit_font(draw, username, 700 * scale, 58 * scale, bold=True)
         name_width = draw.textlength(username, font=name_font)
-        badge_size = 95
-        gap = 14
-        group_width = badge_size + gap + name_width
-        left = round(center_x - group_width / 2)
+        at_font = _load_font(58 * scale, True)
+        at_width = draw.textlength("@", font=at_font)
+        group_width = at_width + name_width
+        left = round(center_x * scale - group_width / 2)
         top = 565
-        draw.ellipse(
-            (left, top, left + badge_size, top + badge_size),
-            outline="#FFFFFF",
-            width=4,
-        )
-        at_font = _load_font(68, True)
-        at_bounds = draw.textbbox((0, 0), "@", font=at_font)
         draw.text(
-            (
-                left + (badge_size - at_bounds[2] + at_bounds[0]) / 2,
-                top + (badge_size - (at_bounds[3] - at_bounds[1])) / 2 - at_bounds[1],
-            ),
+            (left, (top + 8) * scale),
             "@",
             font=at_font,
             fill="#FFFFFF",
-            stroke_width=1,
+            stroke_width=5 * scale,
             stroke_fill="#000000",
         )
         draw.text(
-            (left + badge_size + gap, top + 8),
+            (left + at_width, (top + 8) * scale),
             username,
             font=name_font,
             fill="#FFFFFF",
-            stroke_width=6,
+            stroke_width=6 * scale,
             stroke_fill="#000000",
         )
 
@@ -578,7 +598,7 @@ class ZapUtilities(commands.Bot):
                 max_interval_seconds INTEGER NOT NULL DEFAULT 8,
                 max_per_hour INTEGER NOT NULL DEFAULT 50,
                 manual_enabled INTEGER NOT NULL DEFAULT 1,
-                timezone TEXT NOT NULL DEFAULT 'UTC',
+                timezone TEXT NOT NULL DEFAULT 'America/New_York',
                 weight_small INTEGER NOT NULL DEFAULT 5500,
                 weight_medium INTEGER NOT NULL DEFAULT 2000,
                 weight_large INTEGER NOT NULL DEFAULT 1500,
@@ -621,6 +641,22 @@ class ZapUtilities(commands.Bot):
                 ON simulation_events (guild_id, created_at);
             """
         )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY)"
+        )
+        timezone_migration = "simulation_timezone_default_new_york"
+        if self.db.execute(
+            "SELECT 1 FROM app_migrations WHERE name = ?",
+            (timezone_migration,),
+        ).fetchone() is None:
+            self.db.execute(
+                "UPDATE simulation_settings SET timezone = ? WHERE timezone = 'UTC'",
+                (DEFAULT_SIMULATION_TIMEZONE,),
+            )
+            self.db.execute(
+                "INSERT INTO app_migrations (name) VALUES (?)",
+                (timezone_migration,),
+            )
         self.db.commit()
 
     async def setup_hook(self) -> None:
@@ -760,8 +796,11 @@ bot = ZapUtilities()
 
 def ensure_simulation_settings(guild_id: int) -> None:
     bot.db.execute(
-        "INSERT OR IGNORE INTO simulation_settings (guild_id) VALUES (?)",
-        (guild_id,),
+        """
+        INSERT OR IGNORE INTO simulation_settings (guild_id, timezone)
+        VALUES (?, ?)
+        """,
+        (guild_id, DEFAULT_SIMULATION_TIMEZONE),
     )
     bot.db.executemany(
         "INSERT OR IGNORE INTO simulation_themes (guild_id, theme) VALUES (?, ?)",
@@ -1028,7 +1067,7 @@ async def post_simulation(
     source: str,
 ) -> None:
     await channel.send(
-        content=f"{simulation_message(event, guild_id)}\n-# Sim",
+        content=simulation_message(event, guild_id),
         file=file,
         embed=simulation_embed(event, file.filename),
         allowed_mentions=discord.AllowedMentions.none(),
@@ -1122,7 +1161,7 @@ async def _run_automatic_simulations(guild_id: int) -> None:
 
 @bot.tree.command(
     name="simulated-donation",
-    description="Post a clearly labeled simulated donation card.",
+    description="Post a simulated donation card.",
 )
 @discord.app_commands.guild_only()
 @discord.app_commands.checks.cooldown(1, 10.0)
@@ -1588,7 +1627,7 @@ async def simulation_test(interaction: discord.Interaction) -> None:
         await interaction.followup.send(str(error), ephemeral=True)
         return
     await interaction.followup.send(
-        content=f"{simulation_message(event, interaction.guild_id)}\n-# Sim",
+        content=simulation_message(event, interaction.guild_id),
         file=file,
         embed=simulation_embed(event, file.filename),
         ephemeral=True,

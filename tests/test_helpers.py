@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import unittest
 from datetime import datetime
 from io import BytesIO
@@ -27,6 +28,7 @@ from pate_utilities import (
     on_message,
     on_command_error,
     parse_duration,
+    post_simulation,
     render_donation_card,
     robux_emoji_for_guild,
     role as role_command,
@@ -34,6 +36,7 @@ from pate_utilities import (
     simulation_embed,
     simulation_message,
     validate_roblox_username,
+    ZapUtilities,
     _load_font,
 )
 
@@ -224,6 +227,30 @@ class ElapsedFormatTests(unittest.TestCase):
 class SimulationTests(unittest.TestCase):
     def test_simulation_defaults_to_automatic_mode_off(self):
         self.assertEqual(get_simulation_settings(987654321)["auto_enabled"], 0)
+        self.assertEqual(
+            get_simulation_settings(987654321)["timezone"],
+            "America/New_York",
+        )
+
+    def test_existing_utc_simulation_timezones_migrate_to_eastern(self):
+        legacy_db = sqlite3.connect(":memory:")
+        legacy_db.execute(
+            "CREATE TABLE simulation_settings "
+            "(guild_id INTEGER PRIMARY KEY, timezone TEXT NOT NULL DEFAULT 'UTC')"
+        )
+        legacy_db.execute(
+            "INSERT INTO simulation_settings (guild_id) VALUES (1)"
+        )
+        with patch("pate_utilities.sqlite3.connect", return_value=legacy_db):
+            legacy_bot = ZapUtilities()
+
+        try:
+            row = legacy_bot.db.execute(
+                "SELECT timezone FROM simulation_settings WHERE guild_id = 1"
+            ).fetchone()
+            self.assertEqual(row[0], "America/New_York")
+        finally:
+            legacy_bot.db.close()
 
     def test_demo_user_pairs_are_distinct_and_not_reused_when_alternatives_exist(self):
         guild_id = 987654322
@@ -290,7 +317,7 @@ class SimulationTests(unittest.TestCase):
             1_000_000,
         )
         with Image.open(BytesIO(png)) as card:
-            self.assertEqual(card.size, (2816, 768))
+            self.assertEqual(card.size, (5632, 1536))
             self.assertEqual(card.format, "PNG")
             self.assertEqual(card.mode, "RGBA")
             self.assertEqual(card.getpixel((0, 0))[3], 0)
@@ -334,19 +361,63 @@ class SimulationTests(unittest.TestCase):
                     amount,
                 )
                 with Image.open(BytesIO(png)) as card:
-                    icon_pixels = card.crop((0, 100, card.width // 2, 300)).getdata()
+                    icon_pixels = card.crop(
+                        (0, 200, card.width // 2, 600)
+                    ).getdata()
                     self.assertIn(expected_accent, icon_pixels)
+                    self.assertEqual(card.getpixel((1460, 600)), expected_accent)
                     self.assertEqual(card.getpixel((0, 0))[3], 0)
 
     def test_card_renders_only_the_left_amount_icon(self):
         png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
         with Image.open(BytesIO(png)) as card:
-            icon_pixels = card.crop((0, 100, card.width // 2, 300)).getdata()
+            icon_pixels = card.crop((0, 200, card.width // 2, 600)).getdata()
             self.assertIn((255, 0, 136, 255), icon_pixels)
-            self.assertEqual(card.getpixel((1970, 180))[3], 0)
+            self.assertEqual(card.getpixel((4100, 360))[3], 0)
 
     def test_graphic_uses_montserrat_for_its_amount_text(self):
         self.assertEqual(_load_font(100, True).getname(), ("Montserrat", "Bold"))
+
+    def test_graphic_keeps_amount_text_at_its_natural_width(self):
+        png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
+        font = _load_font(214 * 2, True)
+        expected_width = font.getlength("1,000,000")
+        with Image.open(BytesIO(png)) as card:
+            amount = card.crop((1900, 100, 4100, 600))
+            accent = (255, 0, 136, 255)
+            amount_pixels = [
+                (x, y)
+                for y in range(amount.height)
+                for x in range(amount.width)
+                if amount.getpixel((x, y)) == accent
+            ]
+            rendered_width = (
+                max(x for x, _ in amount_pixels)
+                - min(x for x, _ in amount_pixels)
+                + 1
+            )
+            self.assertGreater(rendered_width, expected_width * 0.97)
+
+    def test_avatar_outline_matches_reference_weight(self):
+        png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
+        with Image.open(BytesIO(png)) as card:
+            center_x, center_y = 540 * 2, 300 * 2
+            self.assertEqual(
+                card.getpixel((center_x + 183 * 2, center_y)),
+                (255, 0, 136, 255),
+            )
+            self.assertEqual(
+                card.getpixel((center_x + 178 * 2, center_y)),
+                (16, 16, 20, 255),
+            )
+
+    def test_graphic_outlines_amount_and_donated_to_text_in_black(self):
+        png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
+        with Image.open(BytesIO(png)) as card:
+            amount = card.crop((1100, 80, 1950, 330))
+            donated_to = card.crop((800, 350, 2016, 540))
+            self.assertIn((0, 0, 0, 255), amount.getdata())
+            self.assertIn((0, 0, 0, 255), donated_to.getdata())
 
     def test_message_uses_robux_emoji_next_to_amount_without_trailing_period(self):
         event = {
@@ -397,6 +468,33 @@ class SimulationTests(unittest.TestCase):
         )
         self.assertEqual(embed.color.value, 0xFF0088)
         self.assertEqual(embed.footer.text, "Donated on • 11/16/2026 12:00 AM")
+
+
+class SimulationPostingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_posted_message_does_not_append_sim_tag(self):
+        event = {
+            "donor": "DemoDonor001",
+            "receiver": "DemoGuest001",
+            "amount": 1_000_000,
+            "category": "diamond",
+            "theme": "pink",
+            "display_time": "11/16/2026 12:00 AM",
+            "created_at": 1,
+        }
+        channel = SimpleNamespace(send=AsyncMock())
+        file = SimpleNamespace(filename="zap-simulation.png")
+
+        with patch.object(
+            zap_bot,
+            "db",
+            SimpleNamespace(execute=Mock(), commit=Mock()),
+        ):
+            await post_simulation(channel, file, event, 1, "automatic")
+
+        self.assertEqual(
+            channel.send.await_args.kwargs["content"],
+            simulation_message(event, guild_id=1),
+        )
 
 
 if __name__ == "__main__":
