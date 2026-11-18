@@ -569,7 +569,7 @@ class SimulationPostingTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_requested_simulation_slash_commands_are_registered(self):
         self.assertEqual(
             {command.name for command in zap_bot.tree.get_commands()},
-            {"simulated-donation", "start"},
+            {"simulated-donation", "start", "welcome-test"},
         )
 
     async def test_posted_message_does_not_append_sim_tag(self):

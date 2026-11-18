@@ -107,6 +107,8 @@ ROBLOX_USERNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_]{1,18}[A-Za-z0-9])$")
 AVATAR_CACHE_SECONDS = 6 * 60 * 60
 AVATAR_FAILURE_CACHE_SECONDS = 10 * 60
 DEFAULT_SIMULATION_TIMEZONE = "America/New_York"
+WELCOME_TEMPLATE_PATH = ASSET_DIRECTORY / "welcome-template-1.gif"
+WELCOME_BRAND_PATH = ASSET_DIRECTORY / "welcome-brand.png"
 
 
 def validate_roblox_username(username: str) -> str:
@@ -141,14 +143,20 @@ def choose_donation_amount(
     raise RuntimeError("Donation amount selection exceeded its configured weights.")
 
 
-def _load_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    try:
-        font = ImageFont.truetype(str(MONTSERRAT_FONT_PATH), size)
-    except OSError:
-        font = None
-    if font is not None:
-        font.set_variation_by_name("Bold" if bold else "Regular")
-        return font
+def _load_font(
+    size: int,
+    bold: bool = False,
+    *,
+    fallback_only: bool = False,
+) -> ImageFont.ImageFont:
+    if not fallback_only:
+        try:
+            font = ImageFont.truetype(str(MONTSERRAT_FONT_PATH), size)
+        except OSError:
+            font = None
+        if font is not None:
+            font.set_variation_by_name("Bold" if bold else "Regular")
+            return font
 
     candidates = (
         ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
@@ -177,6 +185,146 @@ def _fit_font(
         size -= 2
         font = _load_font(size, bold)
     return font
+
+
+def _paste_welcome_icon(
+    image: Image.Image,
+    icon: Image.Image,
+    box: tuple[int, int, int, int],
+) -> None:
+    left, top, width, height = box
+    fitted = icon.copy()
+    fitted.thumbnail((width, height), Image.Resampling.LANCZOS)
+    position = (
+        left + (width - fitted.width) // 2,
+        top + (height - fitted.height) // 2,
+    )
+    image.alpha_composite(fitted, position)
+
+
+def render_welcome_gif(
+    template_bytes: bytes,
+    brand_bytes: bytes,
+    display_name: str,
+    member_number: int,
+    welcome_time: str,
+) -> bytes:
+    template = Image.open(io.BytesIO(template_bytes))
+    brand = Image.open(io.BytesIO(brand_bytes)).convert("RGBA")
+    scale = 1.4
+    output_size = (
+        round(template.width * scale),
+        round(template.height * scale),
+    )
+    template.seek(0)
+    clean_background = template.convert("RGBA").resize(
+        output_size, Image.Resampling.LANCZOS
+    )
+    rendered_frames: list[Image.Image] = []
+    frame_durations: list[int] = []
+    palette_sample_frames: list[Image.Image] = []
+    for frame_number in range(template.n_frames):
+        template.seek(frame_number)
+        frame_duration = template.info.get("duration", 40) or 40
+        frame_durations.append(frame_duration)
+        frame = template.convert("RGBA").resize(
+            output_size, Image.Resampling.LANCZOS
+        )
+        opacity = max(
+            0.0,
+            min(1.0, (frame_number - 4) / 11, (235 - frame_number) / 10),
+        )
+        if 5 <= frame_number < 240:
+            for box in (
+                (15, 92, 175, 111),
+                (15, 111, 175, 130),
+                (15, 130, 175, 149),
+                (28, 172, 90, 201),
+            ):
+                left, top, right, bottom = (
+                    round(coordinate * scale) for coordinate in box
+                )
+                frame.paste(
+                    clean_background.crop((left, top, right, bottom)),
+                    (left, top),
+                )
+            overlay = Image.new("RGBA", output_size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            safe_name = display_name.replace("\n", " ").replace("\r", " ")
+            name_font = _fit_font(
+                draw,
+                safe_name,
+                round(156 * scale),
+                round(12 * scale),
+                bold=False,
+            )
+            draw.text(
+                (round(26 * scale), round(95 * scale)),
+                safe_name,
+                font=name_font,
+                fill="white",
+            )
+            draw.text(
+                (round(26 * scale), round(112 * scale)),
+                f"Member #{member_number:,}",
+                font=_load_font(round(12 * scale), bold=False),
+                fill="white",
+            )
+            draw.text(
+                (round(26 * scale), round(130 * scale)),
+                welcome_time,
+                font=_load_font(round(12 * scale), bold=False),
+                fill="white",
+            )
+
+            left, top, right, bottom = (
+                round(coordinate * scale)
+                for coordinate in (28, 172, 90, 201)
+            )
+            _paste_welcome_icon(
+                overlay,
+                brand,
+                (left, top, right - left, bottom - top),
+            )
+            overlay.putalpha(
+                overlay.getchannel("A").point(
+                    lambda value: round(value * opacity)
+                )
+            )
+            frame.alpha_composite(overlay)
+        rendered_frames.append(frame)
+        if frame_number % 30 == 0:
+            palette_sample_frames.append(frame.convert("RGB"))
+
+    palette_sample = Image.new(
+        "RGB",
+        (
+            output_size[0],
+            output_size[1] * len(palette_sample_frames),
+        ),
+    )
+    for sample_index, frame in enumerate(palette_sample_frames):
+        palette_sample.paste(frame, (0, sample_index * output_size[1]))
+    palette = palette_sample.convert(
+        "P", palette=Image.Palette.ADAPTIVE, colors=256
+    )
+    gif_frames = [
+        frame.convert("RGB").quantize(palette=palette, dither=Image.Dither.NONE)
+        for frame in rendered_frames
+    ]
+    output = io.BytesIO()
+    gif_frames[0].save(
+        output,
+        format="GIF",
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=frame_durations,
+        loop=0,
+        optimize=True,
+        disposal=2,
+    )
+    return output.getvalue()
 
 
 def donation_style_for_amount(amount: int) -> str:
@@ -558,6 +706,7 @@ class ZapUtilities(commands.Bot):
         self.simulation_tasks: dict[int, asyncio.Task] = {}
         self.http_session: aiohttp.ClientSession | None = None
         self.avatar_cache: dict[str, tuple[float, str, bytes | None]] = {}
+        self.welcome_asset_cache: dict[Path, bytes] = {}
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -697,6 +846,14 @@ class ZapUtilities(commands.Bot):
             await self.http_session.close()
         self.db.close()
         await super().close()
+
+    async def _load_welcome_asset(self, path: Path) -> bytes:
+        cached_asset = self.welcome_asset_cache.get(path)
+        if cached_asset is not None:
+            return cached_asset
+        content = await asyncio.to_thread(path.read_bytes)
+        self.welcome_asset_cache[path] = content
+        return content
 
     def _ensure_account(self, guild_id: int, user_id: int) -> None:
         self.db.execute(
@@ -1635,6 +1792,40 @@ async def simulation_test(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(
+    name="welcome-test",
+    description="Post a welcome-message preview in the server's welcome channel.",
+)
+@discord.app_commands.guild_only()
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def welcome_test(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    if guild is None or guild.system_channel is None:
+        await interaction.response.send_message(
+            "This server does not have a system welcome channel configured.",
+            ephemeral=True,
+        )
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message(
+            "Could not identify your server member profile.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    if await post_welcome_message(interaction.user, guild.system_channel):
+        await interaction.followup.send(
+            f"Welcome preview posted in {guild.system_channel.mention}.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            "Could not post the welcome preview. Check the bot logs for details.",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(
     name="start",
     description="Start labeled simulated donations in a channel every 8 seconds.",
 )
@@ -1704,7 +1895,7 @@ async def on_app_command_error(
     if isinstance(error, discord.app_commands.CommandOnCooldown):
         message = f"Try again in {error.retry_after:.1f} seconds."
     elif isinstance(error, discord.app_commands.MissingPermissions):
-        message = "Only server administrators can configure simulations."
+        message = "Only server administrators can use this command."
     else:
         log.error("Zap app command failed: %s", error, exc_info=error)
         message = "That command failed. Please try again or contact a server administrator."
@@ -1896,6 +2087,67 @@ async def on_bulk_message_delete(messages: list[discord.Message]) -> None:
     )
 
 
+async def post_welcome_message(
+    member: discord.Member,
+    channel: discord.TextChannel,
+) -> bool:
+    try:
+        template_bytes, brand_bytes = await asyncio.gather(
+            bot._load_welcome_asset(WELCOME_TEMPLATE_PATH),
+            bot._load_welcome_asset(WELCOME_BRAND_PATH),
+        )
+        member_number = member.guild.member_count
+        if member_number is None:
+            raise RuntimeError("The guild member count is unavailable.")
+        welcome_time = datetime.now(ZoneInfo("America/New_York")).strftime(
+            "%I:%M %p %Z"
+        ).lstrip("0")
+        banner_bytes = await asyncio.to_thread(
+            render_welcome_gif,
+            template_bytes,
+            brand_bytes,
+            member.display_name,
+            member_number,
+            welcome_time,
+        )
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, RuntimeError, ValueError):
+        log.exception("Could not create the welcome GIF for member %s", member.id)
+        return False
+
+    embed = discord.Embed(
+        title="Welcome to Zap's Server",
+        description="We're happy to have you here.",
+        color=discord.Colour.from_rgb(101, 91, 255),
+    )
+    embed.set_image(url="attachment://welcome.gif")
+    welcome_emoji = discord.utils.get(member.guild.emojis, name="lol")
+    if welcome_emoji is None:
+        log.warning("Guild %s does not have the requested :lol: welcome emoji", member.guild.id)
+        welcome_content = member.mention
+    else:
+        welcome_content = f"{welcome_emoji} {member.mention}"
+    try:
+        message = await channel.send(
+            content=welcome_content,
+            embed=embed,
+            file=discord.File(io.BytesIO(banner_bytes), filename="welcome.gif"),
+        )
+    except discord.Forbidden:
+        log.exception("Missing permission to send welcome message in guild %s", member.guild.id)
+        return False
+    except discord.HTTPException:
+        log.exception("Could not send welcome message in guild %s", member.guild.id)
+        return False
+
+    try:
+        await message.add_reaction("👋")
+    except discord.Forbidden:
+        log.exception("Missing permission to add the welcome reaction in guild %s", member.guild.id)
+    except discord.HTTPException:
+        log.exception("Could not add the welcome reaction in guild %s", member.guild.id)
+    return True
+
+
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
     await send_server_log(
@@ -1904,6 +2156,11 @@ async def on_member_join(member: discord.Member) -> None:
         f"{member.mention} ({member}, {member.id})",
         color=discord.Colour.green(),
     )
+    channel = member.guild.system_channel
+    if channel is None:
+        log.error("No system channel is configured for welcome messages in guild %s", member.guild.id)
+        return
+    await post_welcome_message(member, channel)
 
 
 @bot.event
