@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 import discord
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont
 from dotenv import load_dotenv
 from discord.ext import commands
 
@@ -180,9 +180,9 @@ def _fit_font(
 
 
 def donation_style_for_amount(amount: int) -> str:
-    if amount >= 5_000_000:
+    if amount >= 10_000_000:
         return "red"
-    if amount >= 500_000:
+    if amount >= 1_000_000:
         return "pink"
     return "purple"
 
@@ -242,7 +242,7 @@ def render_donation_card(
 
     style = DONATION_STYLES[donation_style_for_amount(amount)]
     accent = style["accent"]
-    scale = 2
+    scale = 3
     width, height = 2816, 768
     canvas_width, canvas_height = width * scale, height * scale
     image = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
@@ -314,15 +314,15 @@ def render_donation_card(
     ) -> None:
         center_x *= scale
         center_y = 300 * scale
-        outer_radius = 200
         draw.ellipse(
             (
-                center_x - outer_radius * scale,
-                center_y - outer_radius * scale,
-                center_x + outer_radius * scale,
-                center_y + outer_radius * scale,
+                center_x - 200 * scale,
+                center_y - 200 * scale,
+                center_x + 200 * scale,
+                center_y + 200 * scale,
             ),
-            fill="#09090B",
+            outline="#09090B",
+            width=5 * scale,
         )
         draw.ellipse(
             (
@@ -331,20 +331,11 @@ def render_donation_card(
                 center_x + 195 * scale,
                 center_y + 195 * scale,
             ),
-            fill=accent,
+            outline=accent,
+            width=15 * scale,
         )
-        draw.ellipse(
-            (
-                center_x - 180 * scale,
-                center_y - 180 * scale,
-                center_x + 180 * scale,
-                center_y + 180 * scale,
-            ),
-            fill="#101014",
-        )
-
         avatar_size = 352 * scale
-        avatar = Image.new("RGBA", (avatar_size, avatar_size), "#464650")
+        avatar: Image.Image
         if avatar_bytes:
             try:
                 with Image.open(io.BytesIO(avatar_bytes)) as source:
@@ -355,15 +346,17 @@ def render_donation_card(
                     source = source.crop(
                         (left, top, left + crop_size, top + crop_size)
                     ).resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
-                    avatar.alpha_composite(source)
+                    avatar = source
             except (OSError, ValueError):
                 log.warning("Using fallback avatar for simulated user %s", username)
+                avatar = Image.new("RGBA", (avatar_size, avatar_size), "#464650")
+        else:
+            avatar = Image.new("RGBA", (avatar_size, avatar_size), "#464650")
         mask = Image.new("L", (avatar_size, avatar_size), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, avatar_size - 1, avatar_size - 1), fill=255)
-        image.paste(
-            avatar,
-            (center_x - avatar_size // 2, center_y - avatar_size // 2),
-            mask,
+        avatar.putalpha(ImageChops.multiply(avatar.getchannel("A"), mask))
+        image.alpha_composite(
+            avatar, (center_x - avatar_size // 2, center_y - avatar_size // 2)
         )
 
     draw_avatar(donor_avatar, 540, donor)
@@ -371,7 +364,7 @@ def render_donation_card(
 
     amount_text = f"{amount:,}"
     amount_stroke_width = 5 * scale
-    amount_top = 88
+    amount_top = 135
     gap = 16 * scale
 
     with Image.open(donation_icon_path_for_amount(amount)) as source:
@@ -385,6 +378,8 @@ def render_donation_card(
         icon_aspect_ratio = icon_source.width / icon_source.height
 
     max_group_width = (width - (540 + 200) - (width - 2298 + 200)) * scale
+    if amount >= 10_000_000:
+        max_group_width = round(max_group_width * 0.85)
     font_size = 214
     while True:
         amount_font = _load_font(font_size * scale, True)
@@ -397,7 +392,8 @@ def render_donation_card(
         amount_fill_bounds = draw.textbbox((0, 0), amount_text, font=amount_font)
         amount_width = amount_bounds[2] - amount_bounds[0]
         amount_height = amount_bounds[3] - amount_bounds[1]
-        icon_size = amount_fill_bounds[3] - amount_fill_bounds[1]
+        text_height = amount_fill_bounds[3] - amount_fill_bounds[1]
+        icon_size = text_height
         icon_width = round(icon_size * icon_aspect_ratio)
         if amount_width + gap + icon_width <= max_group_width:
             break
@@ -425,14 +421,19 @@ def render_donation_card(
         stroke_fill="#000000",
     )
     image.alpha_composite(amount_layer, (amount_left, amount_top * scale))
-    icon_top = amount_top * scale + amount_fill_bounds[1] - amount_bounds[1]
+    icon_top = (
+        amount_top * scale
+        + amount_fill_bounds[1]
+        - amount_bounds[1]
+        + (text_height - icon_size) // 2
+    )
     image.alpha_composite(icon, (icon_left, icon_top))
 
     centered_text(
         "donated to",
         _load_font(132 * scale, True),
         width / 2,
-        365,
+        405,
         fill="#FFFFFF",
         width_scale=1.05,
         height_scale=1.12,
@@ -556,7 +557,7 @@ class ZapUtilities(commands.Bot):
         self.expiry_task: asyncio.Task | None = None
         self.simulation_tasks: dict[int, asyncio.Task] = {}
         self.http_session: aiohttp.ClientSession | None = None
-        self.avatar_cache: dict[str, tuple[float, bytes | None]] = {}
+        self.avatar_cache: dict[str, tuple[float, str, bytes | None]] = {}
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -929,14 +930,15 @@ def choose_demo_users(
     raise RuntimeError("Demo username selection exceeded its configured weights.")
 
 
-async def fetch_roblox_avatar(username: str) -> bytes | None:
+async def fetch_roblox_avatar(username: str) -> tuple[str, bytes | None]:
     now = time.monotonic()
     cached = bot.avatar_cache.get(username.casefold())
     if cached and cached[0] > now:
-        return cached[1]
+        return cached[1], cached[2]
     if bot.http_session is None or bot.http_session.closed:
         raise RuntimeError("Roblox avatar requests are unavailable before bot startup.")
 
+    resolved_username = username
     try:
         async with bot.http_session.post(
             "https://users.roblox.com/v1/usernames/users",
@@ -948,10 +950,12 @@ async def fetch_roblox_avatar(username: str) -> bytes | None:
         if not users:
             bot.avatar_cache[username.casefold()] = (
                 now + AVATAR_FAILURE_CACHE_SECONDS,
+                username,
                 None,
             )
             log.info("No Roblox profile found for demo username %s; using fallback.", username)
-            return None
+            return username, None
+        resolved_username = users[0]["name"]
 
         async with bot.http_session.get(
             "https://thumbnails.roblox.com/v1/users/avatar-headshot",
@@ -973,15 +977,20 @@ async def fetch_roblox_avatar(username: str) -> bytes | None:
             if not response.content_type.startswith("image/"):
                 raise ValueError("Roblox avatar endpoint returned a non-image response.")
             image_bytes = await response.read()
-        bot.avatar_cache[username.casefold()] = (now + AVATAR_CACHE_SECONDS, image_bytes)
-        return image_bytes
+        bot.avatar_cache[username.casefold()] = (
+            now + AVATAR_CACHE_SECONDS,
+            resolved_username,
+            image_bytes,
+        )
+        return resolved_username, image_bytes
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError) as error:
         log.warning("Could not retrieve Roblox avatar for %s: %s", username, error)
         bot.avatar_cache[username.casefold()] = (
             now + AVATAR_FAILURE_CACHE_SECONDS,
+            resolved_username,
             None,
         )
-        return None
+        return resolved_username, None
 
 
 async def create_simulation_file(
@@ -996,11 +1005,8 @@ async def create_simulation_file(
     donor_name, receiver_name = choose_demo_users(guild_id, donor, receiver)
     selected_amount = amount or choose_donation_amount(get_simulation_weights(settings))
     theme = donation_style_for_amount(selected_amount)
-    categories = enabled_simulation_categories(guild_id)
-    if not categories:
-        raise ValueError("Enable at least one notification icon category.")
-    category = secrets.choice(categories)
-    donor_avatar, receiver_avatar = await asyncio.gather(
+    category = secrets.choice(tuple(SIMULATION_CATEGORIES))
+    (donor_name, donor_avatar), (receiver_name, receiver_avatar) = await asyncio.gather(
         fetch_roblox_avatar(donor_name),
         fetch_roblox_avatar(receiver_name),
     )
@@ -1008,7 +1014,7 @@ async def create_simulation_file(
         local_time = datetime.now(ZoneInfo(str(settings["timezone"])))
     except ZoneInfoNotFoundError as error:
         raise ValueError(
-            "The configured timezone is invalid. Set it with `/simulation-settings`."
+            "The configured donation timezone is invalid."
         ) from error
     card_bytes = render_donation_card(
         donor_name,
@@ -1042,7 +1048,7 @@ def simulation_message(
     robux_emoji = robux_emoji_for_guild(guild_id)
     return (
         f"{emoji} `@{event['donor']}` donated "
-        f"**{robux_emoji} {int(event['amount']):,}** to `@{event['receiver']}`"
+        f"{robux_emoji} **{int(event['amount']):,} Robux** to `@{event['receiver']}`"
     )
 
 
@@ -1174,13 +1180,6 @@ async def simulated_donation(
     if interaction.guild is None:
         await interaction.response.send_message(
             "This command is only available in a server.", ephemeral=True
-        )
-        return
-    settings = get_simulation_settings(interaction.guild.id)
-    if not settings["manual_enabled"]:
-        await interaction.response.send_message(
-            "Manual simulations are disabled by this server's administrators.",
-            ephemeral=True,
         )
         return
     if (donor or receiver) and interaction.user.id != interaction.guild.owner_id:
@@ -1684,6 +1683,18 @@ async def stop_simulation(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         "Automatic simulated donations are disabled.", ephemeral=True
     )
+
+
+for command_name in (
+    "simulation-user",
+    "simulation-theme",
+    "simulation-category",
+    "simulation-settings",
+    "simulation-status",
+    "simulation-test",
+    "stop",
+):
+    bot.tree.remove_command(command_name)
 
 
 @bot.tree.error

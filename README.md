@@ -53,24 +53,18 @@ The bot runs continuously and does not need a web server or a port.
 ## Simulated donation cards
 
 Zap can generate demo cards; these are not Roblox transactions and never ping
-Discord users. Automatic posting is disabled until an
-administrator runs `/start channel`. Use `/stop` to disable it. The default
-automatic interval is eight seconds, with a 50-post hourly cap. Administrators
-can adjust minimum/maximum intervals, limits, timezones, amount weights, themes,
-notification icons, and demo username pools with `/simulation-settings`,
-`/simulation-theme`, `/simulation-category`, and `/simulation-user`.
-Donation timestamps use New York time by default.
-`/simulation-test` sends a private preview, while
-`/simulation-status` reports the current configuration.
-Donation cards render at double resolution for sharper text and avatar
+Discord users. Automatic posting is disabled until an administrator runs
+`/start <channel>`. The default automatic interval is eight seconds, with a
+50-post hourly cap. Donation timestamps use New York time by default.
+Donation cards render at triple resolution for sharper text and avatar
 outlines. The tier-specific Robux icons and Montserrat font are bundled in
 `assets/`, so cards do not depend on expiring image links or host-installed fonts.
 
-`/simulated-donation` creates a manual card when manual generation is enabled.
-Only the server owner can add/import or manually provide custom Roblox
-usernames; all other generated names are fictional demo accounts. The bot uses
-Roblox's official public username and avatar thumbnail endpoints when available
-and shows a fallback avatar when a demo username cannot be resolved.
+`/simulated-donation` creates a manual card. Only the server owner can provide
+custom Roblox usernames; all other generated names are fictional demo accounts.
+The bot uses Roblox's official public username and avatar thumbnail endpoints
+when available and shows a fallback avatar when a demo username cannot be
+resolved.
 
 Slash commands are synced globally when the bot starts; Discord can take up to
 an hour to show new global commands. For immediate testing, set `ZAP_GUILD_ID`
@@ -98,10 +92,7 @@ bot then syncs the commands directly to that server.
 - `?balance [@user]`, `?daily`, and `?coinflip <amount> [heads|tails]`
 - `/simulated-donation [amount] [donor] [receiver]` — creates a simulated card;
   custom names require the server owner.
-- `/start <channel>` and `/stop` — enable or disable automatic simulated cards.
-- `/simulation-settings`, `/simulation-user`, `/simulation-theme`, and
-  `/simulation-category` — admin controls for the simulation system.
-- `/simulation-test` and `/simulation-status` — private preview and status.
+- `/start <channel>` — enable automatic simulated cards in the selected channel.
 
 New economy accounts start with 1,000 coins. `?daily` awards 500 coins every
 24 hours, and coinflip bets pay even odds.

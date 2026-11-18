@@ -22,6 +22,7 @@ from pate_utilities import (
     bot as zap_bot,
     get_simulation_settings,
     format_elapsed,
+    fetch_roblox_avatar,
     get_command_prefix,
     level_for_boosts,
     on_member_update,
@@ -317,7 +318,7 @@ class SimulationTests(unittest.TestCase):
             1_000_000,
         )
         with Image.open(BytesIO(png)) as card:
-            self.assertEqual(card.size, (5632, 1536))
+            self.assertEqual(card.size, (8448, 2304))
             self.assertEqual(card.format, "PNG")
             self.assertEqual(card.mode, "RGBA")
             self.assertEqual(card.getpixel((0, 0))[3], 0)
@@ -329,9 +330,18 @@ class SimulationTests(unittest.TestCase):
             )
 
     def test_donation_style_tracks_amount_tiers(self):
-        self.assertEqual(donation_style_for_amount(199_999), "purple")
-        self.assertEqual(donation_style_for_amount(1_000_000), "pink")
-        self.assertEqual(donation_style_for_amount(10_000_000), "red")
+        tiers = (
+            (100_000, "purple"),
+            (500_000, "purple"),
+            (999_999, "purple"),
+            (1_000_000, "pink"),
+            (5_000_000, "pink"),
+            (9_999_999, "pink"),
+            (10_000_000, "red"),
+        )
+        for amount, expected_style in tiers:
+            with self.subTest(amount=amount):
+                self.assertEqual(donation_style_for_amount(amount), expected_style)
 
     def test_donation_icon_file_tracks_amount_tiers(self):
         self.assertEqual(
@@ -339,7 +349,15 @@ class SimulationTests(unittest.TestCase):
             "donation-100k.png",
         )
         self.assertEqual(
+            donation_icon_path_for_amount(500_000).name,
+            "donation-100k.png",
+        )
+        self.assertEqual(
             donation_icon_path_for_amount(1_000_000).name,
+            "donation-1m.png",
+        )
+        self.assertEqual(
+            donation_icon_path_for_amount(5_000_000).name,
             "donation-1m.png",
         )
         self.assertEqual(
@@ -365,25 +383,44 @@ class SimulationTests(unittest.TestCase):
                         (0, 200, card.width // 2, 600)
                     ).getdata()
                     self.assertIn(expected_accent, icon_pixels)
-                    self.assertEqual(card.getpixel((1460, 600)), expected_accent)
+                    self.assertEqual(card.getpixel((540 * 3, 300 * 3)), (70, 70, 80, 255))
                     self.assertEqual(card.getpixel((0, 0))[3], 0)
 
     def test_card_renders_only_the_left_amount_icon(self):
         png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
         with Image.open(BytesIO(png)) as card:
-            icon_pixels = card.crop((0, 200, card.width // 2, 600)).getdata()
+            icon_pixels = card.crop((0, 300, card.width // 2, 900)).getdata()
             self.assertIn((255, 0, 136, 255), icon_pixels)
-            self.assertEqual(card.getpixel((4100, 360))[3], 0)
+            self.assertEqual(card.getpixel((6150, 540))[3], 0)
+
+    def test_10m_amount_group_is_scaled_down_and_centered_between_avatars(self):
+        png = render_donation_card("DemoDonor001", "DemoGuest001", 10_000_000)
+        with Image.open(BytesIO(png)) as card:
+            center_x = card.width // 2
+            x_start = center_x - 1824
+            region = card.crop((x_start, 250, center_x + 1824, 1250))
+            accent_mask = Image.new("1", region.size)
+            accent_mask.putdata(
+                [pixel == (255, 0, 0, 255) for pixel in region.getdata()]
+            )
+            bounds = accent_mask.getbbox()
+
+        self.assertIsNotNone(bounds)
+        amount_group_width = bounds[2] - bounds[0]
+        amount_group_center = x_start + (bounds[0] + bounds[2]) / 2
+        max_avatar_gap = 1358 * 3
+        self.assertLessEqual(amount_group_width, max_avatar_gap * 0.85)
+        self.assertAlmostEqual(amount_group_center, center_x, delta=20)
 
     def test_graphic_uses_montserrat_for_its_amount_text(self):
         self.assertEqual(_load_font(100, True).getname(), ("Montserrat", "Bold"))
 
     def test_graphic_keeps_amount_text_at_its_natural_width(self):
         png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
-        font = _load_font(214 * 2, True)
+        font = _load_font(214 * 3, True)
         expected_width = font.getlength("1,000,000")
         with Image.open(BytesIO(png)) as card:
-            amount = card.crop((1900, 100, 4100, 600))
+            amount = card.crop((2850, 150, 6150, 900))
             accent = (255, 0, 136, 255)
             amount_pixels = [
                 (x, y)
@@ -398,24 +435,43 @@ class SimulationTests(unittest.TestCase):
             )
             self.assertGreater(rendered_width, expected_width * 0.97)
 
-    def test_avatar_outline_matches_reference_weight(self):
+    def test_avatar_keeps_its_color_ring_with_gray_fallback(self):
         png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
         with Image.open(BytesIO(png)) as card:
-            center_x, center_y = 540 * 2, 300 * 2
+            center_x, center_y = 540 * 3, 300 * 3
             self.assertEqual(
-                card.getpixel((center_x + 183 * 2, center_y)),
+                card.getpixel((center_x, center_y)),
+                (70, 70, 80, 255),
+            )
+            self.assertEqual(
+                card.getpixel((center_x + 183 * 3, center_y)),
                 (255, 0, 136, 255),
             )
-            self.assertEqual(
-                card.getpixel((center_x + 178 * 2, center_y)),
-                (16, 16, 20, 255),
-            )
+
+    def test_avatar_image_transparency_is_preserved_inside_the_color_ring(self):
+        avatar = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        for y in range(25, 75):
+            for x in range(25, 75):
+                avatar.putpixel((x, y), (0, 255, 0, 255))
+        avatar_file = BytesIO()
+        avatar.save(avatar_file, format="PNG")
+
+        png = render_donation_card(
+            "DemoDonor001",
+            "DemoGuest001",
+            1_000_000,
+            donor_avatar=avatar_file.getvalue(),
+        )
+        with Image.open(BytesIO(png)) as card:
+            center_x, center_y = 540 * 3, 300 * 3
+            self.assertEqual(card.getpixel((center_x, center_y)), (0, 255, 0, 255))
+            self.assertEqual(card.getpixel((center_x + 150 * 3, center_y))[3], 0)
 
     def test_graphic_outlines_amount_and_donated_to_text_in_black(self):
         png = render_donation_card("DemoDonor001", "DemoGuest001", 1_000_000)
         with Image.open(BytesIO(png)) as card:
-            amount = card.crop((1100, 80, 1950, 330))
-            donated_to = card.crop((800, 350, 2016, 540))
+            amount = card.crop((3000, 390, 5600, 1100))
+            donated_to = card.crop((3500, 1150, 4950, 1700))
             self.assertIn((0, 0, 0, 255), amount.getdata())
             self.assertIn((0, 0, 0, 255), donated_to.getdata())
 
@@ -433,7 +489,7 @@ class SimulationTests(unittest.TestCase):
             self.assertEqual(
                 simulation_message(event, guild_id=1),
                 "<:smite:1> `@DemoDonor001` donated "
-                "**<:robux:2> 1,000,000** to `@DemoGuest001`",
+                "<:robux:2> **1,000,000 Robux** to `@DemoGuest001`",
             )
 
     def test_robux_emoji_is_found_by_name_in_the_guild(self):
@@ -460,7 +516,7 @@ class SimulationTests(unittest.TestCase):
         self.assertIsNone(embed.description)
         self.assertEqual(
             simulation_message(event),
-            "🔹 `@DemoDonor001` donated **:robux: 1,000,000** to `@DemoGuest001`",
+            "🔹 `@DemoDonor001` donated :robux: **1,000,000 Robux** to `@DemoGuest001`",
         )
         self.assertEqual(
             embed.image.url,
@@ -471,6 +527,51 @@ class SimulationTests(unittest.TestCase):
 
 
 class SimulationPostingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_avatar_lookup_returns_roblox_username_casing(self):
+        def response_context(*, json_data=None, content=b"", content_type="application/json"):
+            response = SimpleNamespace(
+                raise_for_status=Mock(),
+                json=AsyncMock(return_value=json_data),
+                read=AsyncMock(return_value=content),
+                content_type=content_type,
+            )
+            context = AsyncMock()
+            context.__aenter__.return_value = response
+            context.__aexit__.return_value = False
+            return context
+
+        session = SimpleNamespace(
+            closed=False,
+            post=Mock(
+                return_value=response_context(
+                    json_data={"data": [{"id": 123, "name": "MiXeDCase"}]}
+                )
+            ),
+            get=Mock(
+                side_effect=[
+                    response_context(
+                        json_data={"data": [{"imageUrl": "https://example.test/avatar"}]}
+                    ),
+                    response_context(content=b"avatar", content_type="image/png"),
+                ]
+            ),
+        )
+
+        with (
+            patch.object(zap_bot, "http_session", session),
+            patch.object(zap_bot, "avatar_cache", {}),
+        ):
+            self.assertEqual(
+                await fetch_roblox_avatar("mixedcase"),
+                ("MiXeDCase", b"avatar"),
+            )
+
+    async def test_only_requested_simulation_slash_commands_are_registered(self):
+        self.assertEqual(
+            {command.name for command in zap_bot.tree.get_commands()},
+            {"simulated-donation", "start"},
+        )
+
     async def test_posted_message_does_not_append_sim_tag(self):
         event = {
             "donor": "DemoDonor001",
