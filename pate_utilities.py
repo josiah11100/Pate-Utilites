@@ -30,11 +30,11 @@ ENABLE_BOOST_ANNOUNCEMENTS = False
 ENABLE_FEEDBACK_POST_PROMPTS = False
 LOG_CHANNEL_ID = 1551143626875084808
 BOOST_CHANNEL_ID = int(os.getenv("BOOST_CHANNEL_ID", "1551143624350113804"))
-FEEDBACK_FORUM_ID = int(os.getenv("FEEDBACK_FORUM_ID", "1551143626422358108"))
+FEEDBACK_FORUM_ID = int(os.getenv("FEEDBACK_FORUM_ID", "1573475152560259172"))
 STAFF_MANAGER_ROLE_ID = int(os.getenv("STAFF_MANAGER_ROLE_ID", "1551143623440076864"))
 STAFF_FOUNDER_ROLE_ID = int(os.getenv("STAFF_FOUNDER_ROLE_ID", "1551143623440076869"))
 STAFF_DEVELOPER_ROLE_ID = int(os.getenv("STAFF_DEVELOPER_ROLE_ID", "1551143623440076866"))
-STAFF_TEAM_ROLE_ID = int(os.getenv("STAFF_TEAM_ROLE_ID", "1551143623427620911"))
+STAFF_TEAM_ROLE_ID = int(os.getenv("STAFF_TEAM_ROLE_ID", "1566101079219900508"))
 MAX_TIMEOUT_SECONDS = 28 * 24 * 60 * 60
 DURATION_UNITS = {
     "s": 1,
@@ -109,6 +109,9 @@ AVATAR_FAILURE_CACHE_SECONDS = 10 * 60
 DEFAULT_SIMULATION_TIMEZONE = "America/New_York"
 WELCOME_TEMPLATE_PATH = ASSET_DIRECTORY / "welcome-template-1.gif"
 WELCOME_BRAND_PATH = ASSET_DIRECTORY / "welcome-brand.png"
+WELCOME_CHANNEL_ID = 1565668878565249026
+GOODBYE_CHANNEL_ID = 1565668881551335518
+MEDIA_REACTION_CHANNEL_ID = 1565668897938473063
 
 
 def validate_roblox_username(username: str) -> str:
@@ -211,7 +214,7 @@ def render_welcome_gif(
 ) -> bytes:
     template = Image.open(io.BytesIO(template_bytes))
     brand = Image.open(io.BytesIO(brand_bytes)).convert("RGBA")
-    scale = 1.4
+    scale = 0.7
     output_size = (
         round(template.width * scale),
         round(template.height * scale),
@@ -324,6 +327,90 @@ def render_welcome_gif(
         optimize=True,
         disposal=2,
     )
+    return output.getvalue()
+
+
+def render_goodbye_image(
+    template_bytes: bytes,
+    brand_bytes: bytes,
+    avatar_bytes: bytes,
+    display_name: str,
+) -> bytes:
+    template = Image.open(io.BytesIO(template_bytes))
+    template.seek(0)
+    scale = 1.5
+    image = template.convert("RGBA").resize(
+        (round(template.width * scale), round(template.height * scale)),
+        Image.Resampling.LANCZOS,
+    )
+    brand = Image.open(io.BytesIO(brand_bytes)).convert("RGBA")
+    avatar = Image.open(io.BytesIO(avatar_bytes))
+    avatar.seek(0)
+    avatar = avatar.convert("RGBA").resize((132, 132), Image.Resampling.LANCZOS)
+    avatar_mask = Image.new("L", avatar.size, 0)
+    ImageDraw.Draw(avatar_mask).ellipse((0, 0, 131, 131), fill=255)
+    avatar.putalpha(avatar_mask)
+
+    scale_x = image.width / 900
+    scale_y = image.height / 363
+    draw = ImageDraw.Draw(image, "RGBA")
+    draw.rounded_rectangle(
+        (
+            round(24 * scale_x),
+            round(35 * scale_y),
+            round(876 * scale_x),
+            round(328 * scale_y),
+        ),
+        radius=round(28 * scale_x),
+        fill=(10, 8, 28, 190),
+        outline=(150, 103, 230, 220),
+        width=max(1, round(4 * scale_x)),
+    )
+    avatar = avatar.resize(
+        (round(132 * scale_x), round(132 * scale_y)),
+        Image.Resampling.LANCZOS,
+    )
+    avatar_position = (round(64 * scale_x), round(115 * scale_y))
+    image.alpha_composite(avatar, avatar_position)
+
+    safe_name = display_name.replace("\n", " ").replace("\r", " ")
+    draw.text(
+        (round(240 * scale_x), round(85 * scale_y)),
+        "GOODBYE",
+        font=_load_font(round(26 * scale_y), bold=True),
+        fill=(190, 160, 255, 255),
+    )
+    draw.text(
+        (round(240 * scale_x), round(130 * scale_y)),
+        safe_name,
+        font=_fit_font(
+            draw,
+            safe_name,
+            round(540 * scale_x),
+            round(50 * scale_y),
+            bold=True,
+        ),
+        fill=(255, 255, 255, 255),
+    )
+    draw.text(
+        (round(240 * scale_x), round(205 * scale_y)),
+        "We hope to see you again!",
+        font=_load_font(round(23 * scale_y), bold=False),
+        fill=(220, 210, 235, 255),
+    )
+    brand_size = round(64 * scale_x)
+    _paste_welcome_icon(
+        image,
+        brand,
+        (
+            image.width - round(42 * scale_x) - brand_size,
+            image.height - round(24 * scale_y) - brand_size,
+            brand_size,
+            brand_size,
+        ),
+    )
+    output = io.BytesIO()
+    image.save(output, format="PNG")
     return output.getvalue()
 
 
@@ -1150,6 +1237,52 @@ async def fetch_roblox_avatar(username: str) -> tuple[str, bytes | None]:
         return resolved_username, None
 
 
+async def fetch_roblox_profile(
+    username: str,
+) -> tuple[str, int, str]:
+    if bot.http_session is None or bot.http_session.closed:
+        raise RuntimeError("Roblox profile requests are unavailable before bot startup.")
+
+    async with bot.http_session.post(
+        "https://users.roblox.com/v1/usernames/users",
+        json={"usernames": [username], "excludeBannedUsers": True},
+    ) as response:
+        response.raise_for_status()
+        profile = await response.json()
+    users = profile.get("data") if isinstance(profile, dict) else None
+    if not isinstance(users, list) or not users:
+        raise ValueError(f"No Roblox account was found for `{username}`.")
+    user = users[0]
+    if (
+        not isinstance(user, dict)
+        or not isinstance(user.get("id"), int)
+        or not isinstance(user.get("name"), str)
+    ):
+        raise ValueError("Roblox returned invalid profile information.")
+
+    async with bot.http_session.get(
+        "https://thumbnails.roblox.com/v1/users/avatar-headshot",
+        params={
+            "userIds": str(user["id"]),
+            "size": "150x150",
+            "format": "Png",
+            "isCircular": "false",
+        },
+    ) as response:
+        response.raise_for_status()
+        thumbnail = await response.json()
+    thumbnails = thumbnail.get("data") if isinstance(thumbnail, dict) else None
+    image_url = (
+        thumbnails[0].get("imageUrl")
+        if isinstance(thumbnails, list) and thumbnails and isinstance(thumbnails[0], dict)
+        else None
+    )
+    if not isinstance(image_url, str) or not image_url:
+        raise ValueError("Roblox did not return a headshot for that account.")
+
+    return user["name"], user["id"], image_url
+
+
 async def create_simulation_file(
     guild_id: int,
     donor: str | None = None,
@@ -1323,12 +1456,12 @@ async def _run_automatic_simulations(guild_id: int) -> None:
 
 
 @bot.tree.command(
-    name="simulated-donation",
-    description="Post a simulated donation card.",
+    name="test-donologs",
+    description="Post a test donation log.",
 )
 @discord.app_commands.guild_only()
 @discord.app_commands.checks.cooldown(1, 10.0)
-async def simulated_donation(
+async def test_donologs(
     interaction: discord.Interaction,
     amount: discord.app_commands.Range[int, 100_000, 50_000_000] | None = None,
     donor: str | None = None,
@@ -1365,6 +1498,250 @@ async def simulated_donation(
         await interaction.followup.send(str(error), ephemeral=True)
         return
     await interaction.followup.send("Simulated donation posted.", ephemeral=True)
+
+
+async def _send_roblox_stats(
+    interaction: discord.Interaction,
+    username: str,
+    stat_name: str,
+) -> None:
+    try:
+        username = validate_roblox_username(username)
+    except ValueError as error:
+        await interaction.response.send_message(str(error), ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    try:
+        resolved_username, user_id, headshot_url = await fetch_roblox_profile(username)
+    except ValueError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        log.warning("Could not retrieve Roblox profile for %s: %s", username, error)
+        await interaction.followup.send(
+            "Roblox is unavailable right now. Please try again later.",
+            ephemeral=True,
+        )
+        return
+
+    title = resolved_username if stat_name == "Raised" else f"@{resolved_username}"
+    embed = discord.Embed(title=title, color=discord.Color.from_rgb(166, 119, 213))
+    embed.add_field(
+        name="Username",
+        value=f"[@{resolved_username}](https://www.roblox.com/users/{user_id}/profile)",
+        inline=True,
+    )
+    embed.add_field(name="ID", value=str(user_id), inline=True)
+    embed.add_field(
+        name=stat_name,
+        value=f"{robux_emoji_for_guild(interaction.guild_id)} 0 Robux",
+        inline=True,
+    )
+    embed.set_thumbnail(url=headshot_url)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(
+    name="getraised",
+    description="Check how much a Roblox user has raised.",
+)
+@discord.app_commands.guild_only()
+async def get_raised(interaction: discord.Interaction, roblox_username: str) -> None:
+    await _send_roblox_stats(interaction, roblox_username, "Raised")
+
+
+@bot.tree.command(
+    name="getdonated",
+    description="Check how much a Roblox user has donated.",
+)
+@discord.app_commands.guild_only()
+async def get_donated(interaction: discord.Interaction, roblox_username: str) -> None:
+    await _send_roblox_stats(interaction, roblox_username, "Donated")
+
+
+DONOROLE_OPTIONS = {
+    "10k": (1573477864903409795, 10_000),
+    "100k": (1573477983820316772, 100_000),
+    "1m": (1573478063000256724, 1_000_000),
+    "10m": (1573478137818386592, 10_000_000),
+}
+DONOROLE_ROLE_IDS = {role_id for role_id, _ in DONOROLE_OPTIONS.values()}
+
+donoroles_group = discord.app_commands.Group(
+    name="donoroles",
+    description="Manage donated roles.",
+)
+
+
+async def _assign_donorole(
+    interaction: discord.Interaction,
+    desired_role: str,
+    overlap: bool,
+    test_amount: int,
+) -> None:
+    guild = interaction.guild
+    member = interaction.user
+    if guild is None:
+        await interaction.response.send_message(
+            "This command is only available in a server."
+        )
+        return
+    check_emoji = str(discord.utils.get(guild.emojis, name="check") or "✅")
+    cross_emoji = str(discord.utils.get(guild.emojis, name="wcross") or "❌")
+    robux_emoji = str(discord.utils.get(guild.emojis, name="robux") or "💰")
+    role_id, required_amount = DONOROLE_OPTIONS[desired_role]
+    role = guild.get_role(role_id)
+    if role is None:
+        await interaction.response.send_message(
+            "The configured donated role is unavailable in this server."
+        )
+        return
+    if not isinstance(member, discord.Member):
+        await interaction.response.send_message(
+            "This command is only available to server members."
+        )
+        return
+    if test_amount < required_amount:
+        await interaction.response.send_message(
+            f"{cross_emoji} You need to have over {robux_emoji} "
+            f"{desired_role} donated to be eligible for a dono role.\n"
+            f"-# You, **{member.display_name}**, only have {robux_emoji} "
+            f"**{test_amount:,}** donated."
+        )
+        return
+    already_had_role = role in member.roles
+    if already_had_role:
+        await interaction.response.send_message(
+            f"{check_emoji} You already have the {role.mention} role."
+        )
+        return
+    if not role.is_assignable():
+        await interaction.response.send_message(
+            "The configured donated role cannot be assigned by the bot."
+        )
+        return
+
+    await member.add_roles(role, reason="Donor role command")
+    if not overlap:
+        other_donor_roles = [
+            existing_role
+            for existing_role in member.roles
+            if existing_role.id in DONOROLE_ROLE_IDS and existing_role != role
+        ]
+        if other_donor_roles:
+            await member.remove_roles(
+                *other_donor_roles, reason="Replacing donated role"
+            )
+    await interaction.response.send_message(
+        f"{check_emoji} Gave you the {role.mention} role."
+    )
+
+
+@donoroles_group.command(
+    name="get",
+    description=(
+        "Get a role based on how much you've donated. "
+        "This command is only usable 10 times every two hours."
+    ),
+)
+@discord.app_commands.checks.cooldown(10, 2 * 60 * 60)
+@discord.app_commands.choices(
+    desired_role=[
+        discord.app_commands.Choice(name="10k", value="10k"),
+        discord.app_commands.Choice(name="100k", value="100k"),
+        discord.app_commands.Choice(name="1m", value="1m"),
+        discord.app_commands.Choice(name="10m", value="10m"),
+    ]
+)
+@discord.app_commands.guild_only()
+async def donoroles_get(
+    interaction: discord.Interaction,
+    desired_role: discord.app_commands.Choice[str] | None = None,
+    overlap: bool = False,
+) -> None:
+    selected_role = (
+        desired_role.value
+        if desired_role is not None
+        else max(DONOROLE_OPTIONS, key=lambda role_name: DONOROLE_OPTIONS[role_name][1])
+    )
+    await _assign_donorole(
+        interaction,
+        selected_role,
+        overlap,
+        DONOROLE_OPTIONS[selected_role][1],
+    )
+
+
+@bot.tree.command(
+    name="test-donoroles",
+    description="Test donated role success and failure.",
+)
+@discord.app_commands.choices(
+    desired_role=[
+        discord.app_commands.Choice(name="10k", value="10k"),
+        discord.app_commands.Choice(name="100k", value="100k"),
+        discord.app_commands.Choice(name="1m", value="1m"),
+        discord.app_commands.Choice(name="10m", value="10m"),
+    ],
+    test_result=[
+        discord.app_commands.Choice(name="Pass", value="pass"),
+        discord.app_commands.Choice(name="Fail", value="fail"),
+    ],
+)
+@discord.app_commands.guild_only()
+async def test_donoroles(
+    interaction: discord.Interaction,
+    desired_role: discord.app_commands.Choice[str],
+    overlap: bool,
+    test_result: discord.app_commands.Choice[str],
+) -> None:
+    required_amount = DONOROLE_OPTIONS[desired_role.value][1]
+    test_amount = (
+        required_amount
+        if test_result.value == "pass"
+        else max(0, required_amount - 1)
+    )
+    await _assign_donorole(
+        interaction, desired_role.value, overlap, test_amount
+    )
+
+
+@donoroles_group.command(
+    name="remove",
+    description=(
+        "Remove your donated role (10K+ Donated / 100K+ Donated / "
+        "1M+ Donated / 10M+ Donated)"
+    ),
+)
+@discord.app_commands.guild_only()
+async def donoroles_remove(interaction: discord.Interaction) -> None:
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message(
+            "This command is only available to server members."
+        )
+        return
+    donor_roles = [
+        role for role in interaction.user.roles if role.id in DONOROLE_ROLE_IDS
+    ]
+    if not donor_roles:
+        cross_emoji = str(
+            discord.utils.get(interaction.guild.emojis, name="wcross") or "❌"
+        )
+        await interaction.response.send_message(
+            f"{cross_emoji} You don't have any 'Donated' roles to remove.",
+            ephemeral=True,
+        )
+        return
+    await interaction.user.remove_roles(
+        *donor_roles, reason="Donated roles removed by member"
+    )
+    await interaction.response.send_message(
+        "✅ Removed your donated roles."
+    )
+
+
+bot.tree.add_command(donoroles_group)
 
 
 simulation_user_group = discord.app_commands.Group(
@@ -1799,9 +2176,10 @@ async def simulation_test(interaction: discord.Interaction) -> None:
 @discord.app_commands.checks.has_permissions(administrator=True)
 async def welcome_test(interaction: discord.Interaction) -> None:
     guild = interaction.guild
-    if guild is None or guild.system_channel is None:
+    channel = guild.get_channel(WELCOME_CHANNEL_ID) if guild else None
+    if not isinstance(channel, discord.TextChannel):
         await interaction.response.send_message(
-            "This server does not have a system welcome channel configured.",
+            "The configured welcome channel is unavailable.",
             ephemeral=True,
         )
         return
@@ -1813,9 +2191,9 @@ async def welcome_test(interaction: discord.Interaction) -> None:
         return
 
     await interaction.response.defer(ephemeral=True)
-    if await post_welcome_message(interaction.user, guild.system_channel):
+    if await post_welcome_message(interaction.user, channel):
         await interaction.followup.send(
-            f"Welcome preview posted in {guild.system_channel.mention}.",
+            f"Welcome preview posted in {channel.mention}.",
             ephemeral=True,
         )
     else:
@@ -1823,39 +2201,6 @@ async def welcome_test(interaction: discord.Interaction) -> None:
             "Could not post the welcome preview. Check the bot logs for details.",
             ephemeral=True,
         )
-
-
-@bot.tree.command(
-    name="start",
-    description="Start labeled simulated donations in a channel every 8 seconds.",
-)
-@discord.app_commands.guild_only()
-@discord.app_commands.checks.has_permissions(administrator=True)
-async def start_simulation(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-) -> None:
-    ensure_simulation_settings(interaction.guild_id)
-    bot.db.execute(
-        """
-        UPDATE simulation_settings
-        SET auto_enabled = 1, channel_id = ?,
-            min_interval_seconds = 8, max_interval_seconds = 8
-        WHERE guild_id = ?
-        """,
-        (channel.id, interaction.guild_id),
-    )
-    bot.db.commit()
-    current_task = bot.simulation_tasks.get(interaction.guild_id)
-    if current_task is None or current_task.done():
-        bot.simulation_tasks[interaction.guild_id] = asyncio.create_task(
-            _run_automatic_simulations(interaction.guild_id)
-        )
-    await interaction.response.send_message(
-        f"Automatic simulated donations are enabled in {channel.mention} every 8 seconds. "
-        "Every post is labeled as a simulation.",
-        ephemeral=True,
-    )
 
 
 @bot.tree.command(name="stop", description="Stop automatic simulated donations.")
@@ -2156,11 +2501,71 @@ async def on_member_join(member: discord.Member) -> None:
         f"{member.mention} ({member}, {member.id})",
         color=discord.Colour.green(),
     )
-    channel = member.guild.system_channel
-    if channel is None:
-        log.error("No system channel is configured for welcome messages in guild %s", member.guild.id)
+    channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        log.error(
+            "Configured welcome channel %s is unavailable in guild %s",
+            WELCOME_CHANNEL_ID,
+            member.guild.id,
+        )
         return
     await post_welcome_message(member, channel)
+
+
+async def post_goodbye_message(member: discord.Member) -> bool:
+    channel = member.guild.get_channel(GOODBYE_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        log.error(
+            "Configured goodbye channel %s is unavailable in guild %s",
+            GOODBYE_CHANNEL_ID,
+            member.guild.id,
+        )
+        return False
+
+    try:
+        template_bytes, brand_bytes, avatar_bytes = await asyncio.gather(
+            bot._load_welcome_asset(WELCOME_TEMPLATE_PATH),
+            bot._load_welcome_asset(WELCOME_BRAND_PATH),
+            member.display_avatar.read(),
+        )
+        image_bytes = await asyncio.to_thread(
+            render_goodbye_image,
+            template_bytes,
+            brand_bytes,
+            avatar_bytes,
+            member.display_name,
+        )
+    except (
+        aiohttp.ClientError,
+        asyncio.TimeoutError,
+        discord.HTTPException,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ):
+        log.exception("Could not create the goodbye image for member %s", member.id)
+        return False
+
+    embed = discord.Embed(
+        description=f"**{member.display_name}** has left the server.",
+        color=discord.Colour.from_rgb(101, 91, 255),
+    )
+    embed.set_image(url="attachment://goodbye.png")
+    try:
+        await channel.send(
+            embed=embed,
+            file=discord.File(io.BytesIO(image_bytes), filename="goodbye.png"),
+        )
+    except discord.Forbidden:
+        log.exception(
+            "Missing permission to send goodbye message in guild %s",
+            member.guild.id,
+        )
+        return False
+    except discord.HTTPException:
+        log.exception("Could not send goodbye message in guild %s", member.guild.id)
+        return False
+    return True
 
 
 @bot.event
@@ -2171,6 +2576,7 @@ async def on_member_remove(member: discord.Member) -> None:
         f"{member} ({member.id})",
         color=discord.Colour.orange(),
     )
+    await post_goodbye_message(member)
 
 
 @bot.event
@@ -2278,6 +2684,47 @@ async def on_voice_state_update(
 async def on_message(message: discord.Message) -> None:
     if message.author.bot or message.guild is None:
         return
+
+    if (
+        getattr(message.channel, "id", None) == MEDIA_REACTION_CHANNEL_ID
+        and any(
+            (
+                attachment.content_type
+                and attachment.content_type.startswith(
+                    ("image/", "video/", "audio/")
+                )
+            )
+            or attachment.filename.casefold().endswith(
+                (
+                    ".avif",
+                    ".gif",
+                    ".jpeg",
+                    ".jpg",
+                    ".mp3",
+                    ".mp4",
+                    ".png",
+                    ".wav",
+                    ".webm",
+                    ".webp",
+                )
+            )
+            for attachment in message.attachments
+        )
+    ):
+        for emoji in ("👍", "👎", "❔"):
+            try:
+                await message.add_reaction(emoji)
+            except discord.Forbidden:
+                log.exception(
+                    "Missing permission to react to media in channel %s",
+                    MEDIA_REACTION_CHANNEL_ID,
+                )
+            except discord.HTTPException:
+                log.exception(
+                    "Could not add %s reaction to media in channel %s",
+                    emoji,
+                    MEDIA_REACTION_CHANNEL_ID,
+                )
 
     if (
         ENABLE_FEEDBACK_POST_PROMPTS
